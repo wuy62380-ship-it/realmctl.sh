@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ==========================================
-# Realm 中转管理面板
-# 特性：自动检测内存大小，动态计算内核参数
+# Realm 中转管理面板 (私有仓库定制版)
+# 特性：原生支持本地文件检测与私有仓库下载
 # ==========================================
 
 RED='\033[0;31m'
@@ -20,22 +20,39 @@ SYSCTL_FILE="/etc/sysctl.d/99-realm-tune.conf"
 
 if [ "$EUID" -ne 0 ]; then echo -e "${RED}错误：请使用 root 用户运行${NC}"; exit 1; fi
 
+# ================= 核心逻辑修复：智能初始化环境 =================
 init_env() {
     mkdir -p ${REALM_DIR}; touch ${DB_FILE}
+    
+    # 【关键修复】优先检查二进制程序是否存在且非空
+    if [ -f "${REALM_BIN}" ] && [ -s "${REALM_BIN}" ]; then
+        chmod +x ${REALM_BIN} > /dev/null 2>&1
+        echo -e "${GREEN}检测到 Realm 核心程序已存在，跳过下载。${NC}"
+        # 如果程序在，但服务没建，补建服务
+        if [ ! -f "${SERVICE_FILE}" ]; then
+            create_service
+        fi
+        return
+    fi
+    
+    # 只有当程序不存在，且服务也不存在时，才触发下载
     if [ ! -f "${SERVICE_FILE}" ]; then
         echo -e "${YELLOW}检测到首次运行，正在初始化 Realm 环境...${NC}"
-        download_realm; create_service
+        download_realm
+        create_service
     fi
 }
 
+# ================= 核心逻辑修复：指向私有仓库下载 =================
 download_realm() {
-    echo -e "${BLUE}正在下载最新版 Realm...${NC}"
-    DOWNLOAD_URL=$(curl -s https://api.github.com/repos/zhboner/realm/releases/latest | grep "browser_download_url.*x86_64-unknown-linux-gnu.tar.gz" | cut -d '"' -f 4)
-    [ -z "$DOWNLOAD_URL" ] && { echo -e "${RED}获取下载链接失败，请检查网络${NC}"; exit 1; }
-    wget -O /tmp/realm.tar.gz "$DOWNLOAD_URL" > /dev/null 2>&1
-    [ $? -ne 0 ] && { echo -e "${RED}Realm 下载失败！${NC}"; exit 1; }
-    tar -xzf /tmp/realm.tar.gz -C /tmp/ && mv /tmp/realm ${REALM_BIN} && chmod +x ${REALM_BIN}
-    rm -f /tmp/realm.tar.gz /tmp/realm
+    echo -e "${BLUE}正在从私有仓库下载 Realm...${NC}"
+    # 直接从你自己的 GitHub 仓库拉取纯二进制文件，彻底告别官方源 502
+    wget -O ${REALM_BIN} https://raw.githubusercontent.com/wuy62380-ship-it/realmctl.sh/main/realm > /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Realm 下载失败！请检查服务器是否能连通你的 GitHub 仓库。${NC}"
+        exit 1
+    fi
+    chmod +x ${REALM_BIN}
     echo -e "${GREEN}✅ Realm 核心程序安装完成！${NC}"
 }
 
@@ -171,20 +188,12 @@ tune_bbrv3() {
         echo -e "${RED}错误：检测到当前内核为 $(uname -r)，请先执行步骤 2 安装内核！${NC}"; return 1
     fi
     
-    # 【核心优化】自动检测物理内存并动态计算 tcp_mem
     local total_mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
     local total_mem_mb=$((total_mem_kb / 1024))
-    
-    # 将 KB 转换为页 (1页 = 4KB)
     local total_pages=$((total_mem_kb / 4))
-    
-    # 动态计算 tcp_mem (低阈值 5%, 中阈值 15%, 高阈值 30%)
-    # 为什么上限只给 30%？因为要防止 TCP 缓冲区吃光所有内存导致 OOM 护盾失效
     local tcp_mem_low=$((total_pages * 5 / 100))
     local tcp_mem_med=$((total_pages * 15 / 100))
     local tcp_mem_high=$((total_pages * 30 / 100))
-    
-    # 设置绝对下限，防止计算出来的值太小
     [ $tcp_mem_low -lt 8192 ] && tcp_mem_low=8192
     [ $tcp_mem_med -lt 16384 ] && tcp_mem_med=16384
     [ $tcp_mem_high -lt 32768 ] && tcp_mem_high=32768
@@ -194,43 +203,25 @@ tune_bbrv3() {
     
     cat > ${SYSCTL_FILE} << EOF
 # --- Realm XanMod BBRv3 智能自适应调优 ---
-
-# 1. 启用 BBRv3 + fq_pie (抗丢包核心)
 net.core.default_qdisc = fq_pie
 net.ipv4.tcp_congestion_control = bbr
-
-# 2. 扩大网络缓冲区至 32MB (防直播大流量猝死)
 net.core.rmem_max = 33554432
 net.core.wmem_max = 33554432
 net.core.rmem_default = 1048576
 net.core.wmem_default = 1048576
 net.ipv4.tcp_rmem = 4096 1048576 33554432
 net.ipv4.tcp_wmem = 4096 65536 33554432
-
-# 3. 网卡底层接收队列 (防海量小包丢包)
 net.core.netdev_max_backlog = 100000
-
-# 4. TCP 连接队列
 net.core.somaxconn = 65535
 net.ipv4.tcp_max_syn_backlog = 65535
-
-# 5. TCP Fast Open (降延迟)
 net.ipv4.tcp_fastopen = 3
-
-# 6. 快速回收端口
 net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_fin_timeout = 10
 net.ipv4.tcp_max_tw_buckets = 500000
-
-# 7. 智能动态 TCP 内存分配 (根据你的 ${total_mem_mb}MB 内存自动计算)
 net.ipv4.tcp_mem = ${tcp_mem_low} ${tcp_mem_med} ${tcp_mem_high}
-
-# 8. 保活机制
 net.ipv4.tcp_keepalive_time = 300
 net.ipv4.tcp_keepalive_intvl = 30
 net.ipv4.tcp_keepalive_probes = 5
-
-# 9. 端口范围
 net.ipv4.ip_local_port_range = 1024 65535
 EOF
 
@@ -292,10 +283,10 @@ menu() {
     init_env
     while true; do
         echo ""
-        echo -e "${GREEN} Realm YW中转机管理面板 (智能自适应版)${NC}"
+        echo -e "${GREEN} Realm 中转机管理面板 (私有仓库定制版)${NC}"
         echo "--------------------------------------------------"
         echo -e "${BLUE} 1. 深度净化系统 (清理流氓程序释放内存)${NC}"
-        echo -e "${RED} 2. 安装/管理BBRv3 内核${NC}"
+        echo -e "${RED} 2. 安装/管理 XanMod BBRv3 内核${NC}"
         echo -e "${YELLOW} 3. 应用 BBRv3 极限调优 (自动识别内存)${NC}"
         echo "--------------------------------------------------"
         echo " 4. 添加落地机中转规则"
