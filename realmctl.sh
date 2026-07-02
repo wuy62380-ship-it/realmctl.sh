@@ -1,17 +1,23 @@
 #!/bin/bash
 
 # ==========================================
-# Realm 中转管理面板
-# 特性：原生支持本地文件检测与私有仓库下载
+# Realm 中转管理面板 v2.0 (美化版)
 # ==========================================
 
+# 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+GRAY='\033[0;90m'
+BOLD='\033[1m'
+DIM='\033[2m'
 NC='\033[0m'
 
+# 路径定义
 REALM_BIN="/usr/local/bin/realm"
 REALM_DIR="/etc/realm"
 DB_FILE="${REALM_DIR}/realms.db"
@@ -19,46 +25,148 @@ TOML_FILE="${REALM_DIR}/config.toml"
 SERVICE_FILE="/etc/systemd/system/realm.service"
 SYSCTL_FILE="/etc/sysctl.d/99-realm-tune.conf"
 
-if [ "$EUID" -ne 0 ]; then echo -e "${RED}错误：请使用 root 用户运行${NC}"; exit 1; fi
+if [ "$EUID" -ne 0 ]; then 
+    echo -e "${RED}\n  ✘ 请使用 root 用户运行此脚本\n${NC}"; 
+    exit 1
+fi
 
-# ================= 核心逻辑修复：智能初始化环境 =================
-init_env() {
-    mkdir -p ${REALM_DIR}; touch ${DB_FILE}
+# ================= 界面组件 =================
+show_header() {
+    clear
+    echo -e "${CYAN}"
+    cat << 'HEADER'
+    ╔═══════════════════════════════════════════════════════╗
+    ║                                                       ║
+    ║          █████╗ ███████╗███████╗██████╗  ██████╗      ║
+    ║         ██╔══██╗╚══███╔╝██╔════╝██╔══██╗██╔═══██╗     ║
+    ║         ███████║  ███╔╝ █████╗  ██████╔╝██║   ██║     ║
+    ║         ██╔══██║ ███╔╝  ██╔══╝  ██╔══██╗██║   ██║     ║
+    ║         ██║  ██║███████╗███████╗██║  ██║╚██████╔╝     ║
+    ║         ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝ ╚═════╝      ║
+    ║                                                       ║
+    ║              中转机管理面板 v2.0                       ║
+    ║                                                       ║
+    ╚═══════════════════════════════════════════════════════╝
+HEADER
+    echo -e "${NC}"
+}
+
+show_system_info() {
+    local kernel=$(uname -r)
+    local uptime=$(uptime -p 2>/dev/null | sed 's/up //')
+    [ -z "$uptime" ] && uptime=$(uptime | sed 's/.*up //' | sed 's/,.*//')
+    local mem_total=$(free -m | awk '/^Mem:/{print $2}')
+    local mem_used=$(free -m | awk '/^Mem:/{print $3}')
+    local mem_percent=$((mem_used * 100 / mem_total))
+    local realm_status="未运行"
+    local realm_color="${RED}"
+    if systemctl is-active --quiet realm 2>/dev/null; then
+        realm_status="运行中"
+        realm_color="${GREEN}"
+    fi
     
-    # 【关键修复】优先检查二进制程序是否存在且非空
+    local bbr_status="未启用"
+    local bbr_color="${RED}"
+    local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    if [ "$current_cc" = "bbr" ]; then
+        bbr_status="已启用"
+        bbr_color="${GREEN}"
+    fi
+    
+    local is_xanmod="否"
+    local xanmod_color="${GRAY}"
+    if echo "$kernel" | grep -qi "xanmod"; then
+        is_xanmod="是"
+        xanmod_color="${GREEN}"
+    fi
+    
+    echo -e "  ${DIM}┌─────────────────────────────────────────────────────────┐${NC}"
+    echo -e "  ${DIM}│${NC}  ${WHITE}系统信息${NC}                                                ${DIM}│${NC}"
+    echo -e "  ${DIM}├─────────────────────────────────────────────────────────┤${NC}"
+    echo -e "  ${DIM}│${NC}  内核版本  ${GRAY}│${NC} ${CYAN}${kernel}${NC} $(echo "$kernel" | grep -qi xanmod && echo "${GREEN}[XanMod]${NC}" || echo "")"
+    echo -e "  ${DIM}│${NC}  运行时间  ${GRAY}│${NC} ${WHITE}${uptime}${NC}"
+    echo -e "  ${DIM}│${NC}  内存使用  ${GRAY}│${NC} ${WHITE}${mem_used}/${mem_total}MB${NC} ${DIM}(${mem_percent}%)${NC}"
+    echo -e "  ${DIM}│${NC}  Realm状态${GRAY}│${NC} ${realm_color}● ${realm_status}${NC}"
+    echo -e "  ${DIM}│${NC}  BBR状态  ${GRAY}│${NC} ${bbr_color}● ${bbr_status}${NC}"
+    echo -e "  ${DIM}│${NC}  XanMod   ${GRAY}│${NC} ${xanmod_color}${is_xanmod}${NC}"
+    echo -e "  ${DIM}└─────────────────────────────────────────────────────────┘${NC}"
+    echo ""
+}
+
+show_menu() {
+    echo -e "  ${MAGENTA}━━━ 系统优化 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${GRAY}  1${NC}  ${BLUE}🧹${NC}  ${WHITE}深度净化系统${NC}          ${DIM}清理流氓程序释放内存${NC}"
+    echo -e "  ${GRAY}  2${NC}  ${BLUE}📦${NC}  ${WHITE}安装/管理 BBRv3 内核${NC}   ${DIM}替换为 XanMod 高性能内核${NC}"
+    echo -e "  ${GRAY}  3${NC}  ${BLUE}⚡${NC}  ${WHITE}应用 BBRv3 极限调优${NC}     ${DIM}自动识别内存动态优化${NC}"
+    echo ""
+    echo -e "  ${MAGENTA}━━━ 中转规则 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${GRAY}  4${NC}  ${GREEN}➕${NC}  ${WHITE}添加落地机中转规则${NC}"
+    echo -e "  ${GRAY}  5${NC}  ${GREEN}📋${NC}  ${WHITE}查看所有中转规则${NC}"
+    echo -e "  ${GRAY}  6${NC}  ${RED}➖${NC}  ${WHITE}删除中转规则${NC}"
+    echo ""
+    echo -e "  ${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${GRAY}  0${NC}  ${DIM}退出脚本${NC}"
+    echo ""
+}
+
+show_prompt() {
+    echo -e "  ${DIM}───────────────────────────────────────────────────────────${NC}"
+    echo -en "  ${CYAN}▶ 请输入选项${NC} ${GRAY}»${NC} "
+}
+
+show_success() {
+    echo -e "\n  ${GREEN}✓ $1${NC}\n"
+}
+
+show_error() {
+    echo -e "\n  ${RED}✘ $1${NC}\n"
+}
+
+show_warning() {
+    echo -e "\n  ${YELLOW}⚠ $1${NC}\n"
+}
+
+show_info() {
+    echo -e "\n  ${CYAN}ℹ $1${NC}\n"
+}
+
+wait_continue() {
+    echo -e "\n  ${DIM}按 Enter 键继续...${NC}"
+    read -s
+}
+
+# ================= 核心逻辑 =================
+init_env() {
+    mkdir -p ${REALM_DIR} 2>/dev/null
+    touch ${DB_FILE} 2>/dev/null
+    
     if [ -f "${REALM_BIN}" ] && [ -s "${REALM_BIN}" ]; then
         chmod +x ${REALM_BIN} > /dev/null 2>&1
-        echo -e "${GREEN}检测到 Realm 核心程序已存在，跳过下载。${NC}"
-        # 如果程序在，但服务没建，补建服务
         if [ ! -f "${SERVICE_FILE}" ]; then
             create_service
         fi
         return
     fi
     
-    # 只有当程序不存在，且服务也不存在时，才触发下载
     if [ ! -f "${SERVICE_FILE}" ]; then
-        echo -e "${YELLOW}检测到首次运行，正在初始化 Realm 环境...${NC}"
+        echo -e "  ${YELLOW}首次运行，正在初始化 Realm 环境...${NC}"
         download_realm
         create_service
     fi
 }
 
-# ================= 核心逻辑修复：指向私有仓库下载 =================
 download_realm() {
-    echo -e "${BLUE}正在从私有仓库下载 Realm...${NC}"
-    # 直接从你自己的 GitHub 仓库拉取纯二进制文件，彻底告别官方源 502
+    echo -e "  ${BLUE}正在从私有仓库下载 Realm...${NC}"
     wget -O ${REALM_BIN} https://raw.githubusercontent.com/wuy62380-ship-it/realmctl.sh/main/realm > /dev/null 2>&1
     if [ $? -ne 0 ]; then
-        # 失败时尝试 curl 备用方案
         curl -Lo ${REALM_BIN} https://raw.githubusercontent.com/wuy62380-ship-it/realmctl.sh/main/realm > /dev/null 2>&1
         if [ $? -ne 0 ]; then
-            echo -e "${RED}Realm 下载失败！请检查服务器是否能连通 GitHub。${NC}"
+            show_error "Realm 下载失败！请检查网络连接"
             exit 1
         fi
     fi
     chmod +x ${REALM_BIN}
-    echo -e "${GREEN}✅ Realm 核心程序安装完成！${NC}"
+    show_success "Realm 核心程序安装完成"
 }
 
 create_service() {
@@ -78,12 +186,12 @@ OOMScoreAdjust=-1000
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload; systemctl enable realm > /dev/null 2>&1
-    echo -e "${GREEN}✅ Systemd 服务与 OOM 护盾已激活！${NC}"
+    systemctl daemon-reload > /dev/null 2>&1
+    systemctl enable realm > /dev/null 2>&1
 }
 
 manage_firewall() {
-    local port=$1; local action=$2
+    local port=$1 action=$2
     if command -v ufw &> /dev/null; then
         [ "$action" == "open" ] && ufw allow ${port}/tcp > /dev/null 2>&1 || ufw delete allow ${port}/tcp > /dev/null 2>&1
     elif command -v firewall-cmd &> /dev/null; then
@@ -102,31 +210,49 @@ generate_toml() {
 }
 
 reload_realm() {
-    generate_toml; systemctl restart realm
-    [ $? -eq 0 ] && echo -e "${GREEN}✅ 操作成功！Realm 已重载生效。${NC}" || echo -e "${RED}❌ Realm 重启失败，请检查日志！${NC}"
+    generate_toml
+    systemctl restart realm 2>/dev/null
+    if [ $? -eq 0 ]; then
+        show_success "Realm 已重载生效"
+    else
+        show_error "Realm 重启失败，请检查日志: journalctl -u realm"
+    fi
 }
 
 # ================= 1. 深度净化系统 =================
 clean_system_junk() {
-    echo -e "${BLUE}================ 深度净化系统冗余组件 ================${NC}"
-    echo -e "${YELLOW}正在安全释放被流氓程序占用的物理内存...${NC}"
+    show_header
+    echo -e "  ${BLUE}━━━ 深度净化系统 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "  ${YELLOW}正在扫描并清理系统冗余组件...${NC}"
+    echo ""
+    
     local cleaned=0
+    
     if systemctl is-active --quiet apt-daily.timer 2>/dev/null; then
         systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null
-        echo -e "${GREEN}✅ 已禁用 APT 自动更新 (防 CPU/内存突刺)${NC}"; cleaned=1
+        echo -e "  ${GREEN}✓${NC} ${WHITE}已禁用 APT 自动更新${NC}          ${DIM}防止 CPU/内存突刺${NC}"
+        cleaned=1
     fi
-    if dpkg -l | grep -q landscape-client; then
+    
+    if dpkg -l | grep -q landscape-client 2>/dev/null; then
         apt-get remove -y landscape-client landscape-common > /dev/null 2>&1
-        echo -e "${GREEN}✅ 已卸载 Landscape 监控 (释放大量内存)${NC}"; cleaned=1
+        echo -e "  ${GREEN}✓${NC} ${WHITE}已卸载 Landscape 监控${NC}        ${DIM}释放大量内存${NC}"
+        cleaned=1
     fi
+    
     if systemctl is-active --quiet aegis-agent 2>/dev/null; then
         systemctl stop aegis-agent && systemctl disable aegis-agent 2>/dev/null
-        echo -e "${GREEN}✅ 已休眠阿里云安骑士${NC}"; cleaned=1
+        echo -e "  ${GREEN}✓${NC} ${WHITE}已休眠阿里云安骑士${NC}"
+        cleaned=1
     fi
+    
     if systemctl is-active --quiet tat_agent 2>/dev/null; then
         systemctl stop tat_agent && systemctl disable tat_agent 2>/dev/null
-        echo -e "${GREEN}✅ 已休眠腾讯云自动化助手${NC}"; cleaned=1
+        echo -e "  ${GREEN}✓${NC} ${WHITE}已休眠腾讯云自动化助手${NC}"
+        cleaned=1
     fi
+    
     if [ ! -f "/etc/systemd/journald.conf.d/override.conf" ]; then
         mkdir -p /etc/systemd/journald.conf.d
         cat > /etc/systemd/journald.conf.d/override.conf << EOF
@@ -136,38 +262,51 @@ SystemMaxFileSize=10M
 MaxRetentionSec=3days
 EOF
         systemctl restart systemd-journald 2>/dev/null
-        echo -e "${GREEN}✅ 已限制系统日志上限为 50MB${NC}"; cleaned=1
+        echo -e "  ${GREEN}✓${NC} ${WHITE}已限制日志上限${NC}              ${DIM}50MB / 3天${NC}"
+        cleaned=1
     fi
+    
     apt-get clean > /dev/null 2>&1
-    [ $cleaned -eq 0 ] && echo -e "${YELLOW}系统非常纯净，无需清理。${NC}" || echo -e "${GREEN}🧹 净化完成！物理内存已归还系统。${NC}"
+    
+    echo ""
+    if [ $cleaned -eq 0 ]; then
+        show_info "系统非常纯净，无需清理"
+    else
+        show_success "净化完成！物理内存已归还系统"
+    fi
+    
+    wait_continue
 }
 
 # ================= 2. 安装 XanMod 内核 =================
 check_disk_space() { 
-    local req=$1; 
-    local avail=$(df / | awk 'NR==2{print $4}'); 
-    [ "$avail" -lt "$((req*1024*1024))" ] && { echo -e "${RED}磁盘空间不足，至少需要 ${req}GB${NC}"; return 1; }; 
+    local req=$1 avail=$(df / | awk 'NR==2{print $4}')
+    [ "$avail" -lt "$((req*1024*1024))" ] && { show_error "磁盘空间不足，至少需要 ${req}GB"; return 1; }
     return 0
 }
 
 check_swap() { 
     if [ "$(swapon -s | wc -l)" -le 1 ]; then
-        echo -e "${YELLOW}未检测到 Swap，创建 1G 临时 Swap 防止安装 OOM...${NC}"; 
+        echo -e "  ${YELLOW}创建 1G 临时 Swap 防止 OOM...${NC}"
         fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile > /dev/null 2>&1 && swapon /swapfile
     fi
     return 0
 }
 
 bbr_on() { 
-    sed -i '/net.core.default_qdisc/d; /net.ipv4.tcp_congestion_control/d' ${SYSCTL_FILE} 2>/dev/null
     mkdir -p /etc/sysctl.d
+    sed -i '/net.core.default_qdisc/d; /net.ipv4.tcp_congestion_control/d' ${SYSCTL_FILE} 2>/dev/null
     echo -e "net.core.default_qdisc = fq_pie\nnet.ipv4.tcp_congestion_control = bbr" >> ${SYSCTL_FILE}
     sysctl --system > /dev/null 2>&1
 }
 
 server_reboot() { 
-    echo -e "${GREEN}内核替换成功！按回车键重启服务器...${NC}"; 
-    read; 
+    echo ""
+    echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${GREEN}  ✓ 内核替换成功！${NC}"
+    echo -e "  ${YELLOW}  按 Enter 键重启服务器...${NC}"
+    echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    read
     reboot
 }
 
@@ -182,23 +321,27 @@ xanmod_add_repo() {
         os_codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
     fi
     
-    if ! echo "bookworm trixie forky sid noble plucky" | grep -qw "$os_codename"; then 
+    # 【修复】Debian 13 (trixie/forky) 使用 releases 通用源
+    if echo "trixie forky" | grep -qw "$os_codename"; then
+        echo -e "  ${YELLOW}检测到 Debian 测试版 ($os_codename)，使用通用源...${NC}"
         os_codename="releases"
     fi
     
-    if echo "jammy focal bullseye buster releases" | grep -qw "$os_codename"; then 
-        echo -e "${RED}XanMod 已停止对当前系统($os_codename)支持${NC}"; 
+    if echo "jammy focal bullseye buster" | grep -qw "$os_codename"; then 
+        show_error "XanMod 已停止对 $os_codename 的支持"
         return 1
     fi
     
-    [ -z "$os_codename" ] && { echo "无法获取系统代号"; return 1; }
+    [ -z "$os_codename" ] && { show_error "无法获取系统代号"; return 1; }
     
-    apt-get install -y wget gnupg ca-certificates || return 1
+    apt-get install -y wget gnupg ca-certificates > /dev/null 2>&1 || return 1
     mkdir -p /usr/share/keyrings /etc/apt/sources.list.d
     
     wget -qO - "https://dl.xanmod.org/archive.key" | gpg --dearmor -o "$keyring" --yes 2>/dev/null
     chmod 644 "$keyring"
     echo "deb [signed-by=$keyring] http://deb.xanmod.org $os_codename main" > "$list_file"
+    
+    echo -e "  ${GREEN}✓ XanMod 源配置完成${NC} ${DIM}($os_codename)${NC}"
 }
 
 xanmod_detect_package() {
@@ -206,11 +349,11 @@ xanmod_detect_package() {
     [ "$psabi_level" -gt 3 ] && psabi_level=3
     apt-get update -y >/dev/null 2>&1
     for prefix in linux-xanmod linux-xanmod-lts; do 
-        local l="$psabi_level"; 
+        local l="$psabi_level"
         while [ "$l" -ge 1 ]; do 
-            local p="${prefix}-x64v${l}"; 
+            local p="${prefix}-x64v${l}"
             if apt-cache policy "$p" 2>/dev/null | grep -q 'Candidate: [^ ]'; then 
-                printf '%s\n' "$p"; 
+                printf '%s\n' "$p"
                 return 0
             fi
             l=$((l-1))
@@ -220,123 +363,135 @@ xanmod_detect_package() {
 }
 
 install_bbrv3() {
-    echo -e "${BLUE}================ 安装 XanMod BBRv3 内核 ================${NC}"
-    echo -e "${RED}⚠️  警告：此操作将替换系统内核！仅限 Debian/Ubuntu x86_64。${NC}"
-    read -p "确定继续？(输入 y): " confirm
+    show_header
+    echo -e "  ${RED}━━━ 安装 XanMod BBRv3 内核 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "  ${RED}  ⚠ 此操作将替换系统内核！仅限 Debian/Ubuntu x86_64${NC}"
+    echo ""
+    echo -en "  ${YELLOW}确定继续？${NC} ${GRAY}[y/N]${NC} » "
+    local confirm
+    read confirm
     [[ ! "$confirm" =~ ^[Yy]$ ]] && return
     
     if [ "$(uname -m)" = "aarch64" ]; then 
-        echo -e "${RED}ARM架构请使用专用脚本${NC}"; 
+        show_error "ARM 架构暂不支持，请使用专用脚本"
+        wait_continue
         return
     fi
     
     if [ -r /etc/os-release ]; then 
         . /etc/os-release
         if [ "$ID" != "debian" ] && [ "$ID" != "ubuntu" ]; then 
-            echo -e "${RED}仅支持 Debian/Ubuntu${NC}"; 
+            show_error "仅支持 Debian/Ubuntu"
+            wait_continue
             return
         fi
     else 
         return
     fi
     
-    # 【修复】检查是否已安装 XanMod 内核
     local installed_kernel=$(dpkg-query -W -f='${Package}\n' 'linux-*xanmod*' 2>/dev/null | grep '^linux-.*xanmod' | head -1)
     
     if [ -n "$installed_kernel" ]; then
-        echo -e "${YELLOW}检测到已安装 XanMod 内核: ${GREEN}${installed_kernel}${NC}"
+        echo -e "  ${GREEN}✓ 检测到已安装: ${installed_kernel}${NC}"
         echo ""
         while true; do 
-            clear
-            echo -e "${CYAN}当前运行内核: $(uname -r)${NC}"
-            echo -e "${GREEN}已安装内核: ${installed_kernel}${NC}"
+            show_header
+            echo -e "  ${CYAN}━━━ XanMod 内核管理 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo ""
-            echo "1. 更新内核到最新版本"
-            echo "2. 卸载内核还原系统"
-            echo "0. 返回主菜单"
-            read -e -p "请选择: " c
+            echo -e "  ${WHITE}当前运行内核${NC}  ${GRAY}│${NC}  ${CYAN}$(uname -r)${NC}"
+            echo -e "  ${WHITE}已安装内核${NC}    ${GRAY}│${NC}  ${GREEN}${installed_kernel}${NC}"
+            echo ""
+            echo -e "  ${GRAY}  1${NC}  ${WHITE}更新内核到最新版本${NC}"
+            echo -e "  ${GRAY}  2${NC}  ${RED}卸载内核还原系统${NC}"
+            echo -e "  ${GRAY}  0${NC}  ${DIM}返回主菜单${NC}"
+            echo ""
+            echo -en "  ${CYAN}▶ 请选择${NC} ${GRAY}»${NC} "
+            local c; read c
             case $c in 
                 1) 
-                    check_disk_space 3 && check_swap && xanmod_add_repo && apt-get update -y && \
-                    apt-get install -y --only-upgrade $(xanmod_detect_package) && bbr_on && server_reboot
+                    check_disk_space 3 && check_swap && xanmod_add_repo && apt-get update -y
+                    local pkg=$(xanmod_detect_package)
+                    [ -n "$pkg" ] && apt-get install -y --only-upgrade "$pkg" && bbr_on && server_reboot
                     ;; 
                 2) 
-                    apt-get purge -y 'linux-*xanmod*' && apt-get autoremove -y && update-grub && \
-                    rm -f /etc/apt/sources.list.d/xanmod-release.list && server_reboot
+                    echo -en "  ${RED}确定卸载 XanMod 内核？${NC} ${GRAY}[y/N]${NC} » "
+                    local sure; read sure
+                    [[ "$sure" =~ ^[Yy]$ ]] && apt-get purge -y 'linux-*xanmod*' && apt-get autoremove -y && update-grub && rm -f /etc/apt/sources.list.d/xanmod-release.list && server_reboot
                     ;; 
                 *) break ;; 
             esac
         done
     else
-        # 首次安装
-        check_disk_space 3 && check_swap && xanmod_add_repo && apt-get update -y
+        check_disk_space 3 && check_swap && xanmod_add_repo
+        echo ""
+        echo -e "  ${YELLOW}正在检测适合的内核包...${NC}"
         local pkg_name=$(xanmod_detect_package)
         if [ -z "$pkg_name" ]; then
-            echo -e "${RED}无法检测到适合的 XanMod 内核包！${NC}"
+            echo ""
+            show_error "无法找到适合的 XanMod 内核包！"
+            echo -e "  ${DIM}可能原因：系统版本过新/过旧，或仓库连接失败${NC}"
+            echo -e "  ${DIM}尝试手动运行: apt-cache search xanmod${NC}"
+            wait_continue
             return
         fi
-        echo -e "${YELLOW}即将安装: ${GREEN}${pkg_name}${NC}"
+        echo -e "  ${GREEN}✓ 检测到: ${pkg_name}${NC}"
+        echo ""
+        echo -e "  ${YELLOW}开始安装...${NC}"
         apt-get install -y ${pkg_name} && bbr_on && server_reboot
     fi
 }
 
-# ================= 3. 应用 BBRv3 极限调优 (智能自适应版) =================
-# 【核心修复】智能检测内核状态，区分"已安装未重启"和"未安装"
+# ================= 3. 应用 BBRv3 极限调优 =================
 tune_bbrv3() {
-    echo -e "${BLUE}================ 应用 BBRv3 极限调优参数 ================${NC}"
+    show_header
+    echo -e "  ${YELLOW}━━━ 应用 BBRv3 极限调优 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
     
     local current_kernel=$(uname -r)
     local is_running_xanmod="no"
+    echo "$current_kernel" | grep -qi "xanmod" && is_running_xanmod="yes"
     
-    # 检测当前运行的内核是否为 XanMod
-    if echo "$current_kernel" | grep -qi "xanmod"; then
-        is_running_xanmod="yes"
-    fi
-    
-    # 【新增】检测是否安装了 XanMod 内核包（但可能未重启）
-    local installed_xanmod_pkgs=$(dpkg-query -W -f='${Package} ${Version}\n' 'linux-*xanmod*' 2>/dev/null | grep '^linux-.*xanmod')
+    local installed_xanmod=$(dpkg-query -W -f='${Package} ${Version}\n' 'linux-*xanmod*' 2>/dev/null | grep '^linux-.*xanmod')
     local has_xanmod_installed="no"
-    [ -n "$installed_xanmod_pkgs" ] && has_xanmod_installed="yes"
+    [ -n "$installed_xanmod" ] && has_xanmod_installed="yes"
     
-    # 情况判断
     if [ "$is_running_xanmod" = "no" ]; then
         if [ "$has_xanmod_installed" = "yes" ]; then
-            # ========== 情况1：已安装但未重启 ==========
-            echo -e "${YELLOW}╔══════════════════════════════════════════════════════════╗${NC}"
-            echo -e "${YELLOW}║  ⚠️  XanMod 内核已安装，但当前系统尚未使用它！        ║${NC}"
-            echo -e "${YELLOW}╚══════════════════════════════════════════════════════════╝${NC}"
+            echo -e "  ${YELLOW}╔═══════════════════════════════════════════════════════════╗${NC}"
+            echo -e "  ${YELLOW}║  ⚠  XanMod 内核已安装，但当前系统尚未使用它            ║${NC}"
+            echo -e "  ${YELLOW}╚═══════════════════════════════════════════════════════════╝${NC}"
             echo ""
-            echo -e "${RED}当前运行内核: ${current_kernel}${NC}"
-            echo ""
-            echo -e "${GREEN}已安装的 XanMod 内核:${NC}"
-            echo "$installed_xanmod_pkgs" | while read pkg ver; do
-                echo -e "  📦 ${GREEN}${pkg}${NC} ${CYAN}${ver}${NC}"
+            echo -e "  ${RED}当前运行${NC}  ${GRAY}│${NC}  ${current_kernel}"
+            echo -e "  ${GREEN}已安装${NC}    ${GRAY}│${NC}"
+            echo "$installed_xanmod" | while read pkg ver; do
+                echo -e "             ${GRAY}│${NC}  ${GREEN}📦 ${pkg} ${DIM}${ver}${NC}"
             done
             echo ""
-            echo -e "${YELLOW}💡 解决方法：重启服务器以加载新内核${NC}"
+            echo -e "  ${CYAN}💡 解决方法：重启服务器以加载新内核${NC}"
             echo ""
-            read -p "是否现在重启？(y/n): " reboot_now
-            if [[ "$reboot_now" =~ ^[Yy]$ ]]; then
-                echo -e "${GREEN}正在重启...${NC}"
-                reboot
-            fi
+            echo -en "  ${YELLOW}是否现在重启？${NC} ${GRAY}[y/N]${NC} » "
+            local reboot_now; read reboot_now
+            [[ "$reboot_now" =~ ^[Yy]$ ]] && reboot
+            wait_continue
             return 1
         else
-            # ========== 情况2：根本没安装 ==========
-            echo -e "${RED}╔══════════════════════════════════════════════════════════╗${NC}"
-            echo -e "${RED}║  ❌ 错误：系统未安装 BBRv3 内核！                      ║${NC}"
-            echo -e "${RED}╚══════════════════════════════════════════════════════════╝${NC}"
+            echo -e "  ${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
+            echo -e "  ${RED}║  ✘ 系统未安装 BBRv3 内核！                            ║${NC}"
+            echo -e "  ${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
             echo ""
-            echo -e "${RED}当前内核: ${current_kernel}${NC}"
+            echo -e "  ${RED}当前内核${NC}  ${GRAY}│${NC}  ${current_kernel}"
             echo ""
-            echo -e "${YELLOW}👉 请先返回主菜单，执行 ${CYAN}[2. 安装/管理BBRv3 内核]${YELLOW}，安装完成后重启服务器。${NC}"
+            echo -e "  ${CYAN}👉 请先执行${NC} ${WHITE}[2. 安装/管理BBRv3 内核]${NC}"
+            echo -e "  ${CYAN}   安装完成后需要重启服务器${NC}"
             echo ""
+            wait_continue
             return 1
         fi
     fi
     
-    # ========== 以下为正常运行 XanMod 内核的逻辑 ==========
-    echo -e "${GREEN}✅ 检测到 XanMod 内核: ${current_kernel}${NC}"
+    echo -e "  ${GREEN}✓ 检测到 XanMod 内核: ${current_kernel}${NC}"
+    echo ""
     
     local total_mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
     local total_mem_mb=$((total_mem_kb / 1024))
@@ -348,8 +503,10 @@ tune_bbrv3() {
     [ $tcp_mem_med -lt 16384 ] && tcp_mem_med=16384
     [ $tcp_mem_high -lt 32768 ] && tcp_mem_high=32768
     
-    echo -e "${YELLOW}检测到系统物理内存: ${CYAN}${total_mem_mb} MB${NC}"
-    echo -e "${YELLOW}正在写入动态计算的内核参数...${NC}"
+    echo -e "  ${WHITE}系统内存${NC}  ${GRAY}│${NC}  ${CYAN}${total_mem_mb} MB${NC}"
+    echo -e "  ${WHITE}TCP 内存池${NC}${GRAY}│${NC}  ${DIM}${tcp_mem_low} / ${tcp_mem_med} / ${tcp_mem_high}${NC}"
+    echo ""
+    echo -e "  ${YELLOW}正在写入内核参数...${NC}"
     
     mkdir -p /etc/sysctl.d
     cat > ${SYSCTL_FILE} << EOF
@@ -361,7 +518,7 @@ tune_bbrv3() {
 net.core.default_qdisc = fq_pie
 net.ipv4.tcp_congestion_control = bbr
 
-# === 缓冲区设置 (32MB 上限) ===
+# === 缓冲区设置 (32MB) ===
 net.core.rmem_max = 33554432
 net.core.wmem_max = 33554432
 net.core.rmem_default = 1048576
@@ -380,7 +537,7 @@ net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_fin_timeout = 10
 net.ipv4.tcp_max_tw_buckets = 500000
 
-# === TCP 内存池 (根据 ${total_mem_mb}MB 动态计算) ===
+# === TCP 内存池 ===
 net.ipv4.tcp_mem = ${tcp_mem_low} ${tcp_mem_med} ${tcp_mem_high}
 
 # === Keepalive ===
@@ -394,105 +551,175 @@ EOF
 
     sysctl --system > /dev/null 2>&1
     
-    # 验证是否生效
     local verify_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
     local verify_cong=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
     
     echo ""
-    echo -e "${GREEN}╔══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║  ✅ BBRv3 极限调优已成功应用！                          ║${NC}"
-    echo -e "${GREEN}╠══════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${GREEN}║  队列算法: ${CYAN}${verify_qdisc}${GREEN}                                  ║${NC}"
-    echo -e "${GREEN}║  拥塞控制: ${CYAN}${verify_cong}${GREEN}                                        ║${NC}"
-    echo -e "${GREEN}║  缓冲区:   ${CYAN}32MB${GREEN}                                         ║${NC}"
-    echo -e "${GREEN}║  内存池:   ${CYAN}已根据 ${total_mem_mb}MB 动态优化${GREEN}                       ║${NC}"
-    echo -e "${GREEN}╚══════════════════════════════════════════════════════════╝${NC}"
+    echo -e "  ${GREEN}╔═══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "  ${GREEN}║  ✓ BBRv3 极限调优已成功应用！                          ║${NC}"
+    echo -e "  ${GREEN}╠══════════════════════════════════════════════════════════╣${NC}"
+    echo -e "  ${GREEN}║${NC}  ${WHITE}队列算法${NC}  ${GRAY}│${NC}  ${CYAN}${verify_qdisc}"
+    echo -e "  ${GREEN}║${NC}  ${WHITE}拥塞控制${NC}  ${GRAY}│${NC}  ${CYAN}${verify_cong}"
+    echo -e "  ${GREEN}║${NC}  ${WHITE}缓冲区${NC}    ${GRAY}│${NC}  ${CYAN}32MB"
+    echo -e "  ${GREEN}║${NC}  ${WHITE}内存优化${NC}  ${GRAY}│${NC}  ${CYAN}已根据 ${total_mem_mb}MB 动态计算"
+    echo -e "  ${GREEN}╚═══════════════════════════════════════════════════════════╝${NC}"
+    
+    wait_continue
 }
 
 # ================= 4. 添加落地机 =================
 add_realm() {
-    echo -e "${BLUE}================ 添加中转规则 ================${NC}"
-    read -p "中转机监听端口 (如 20000): " local_port
+    show_header
+    echo -e "  ${GREEN}━━━ 添加中转规则 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    
+    echo -en "  ${WHITE}中转机监听端口${NC} ${GRAY}»${NC} "
+    local local_port; read local_port
     if ! [[ "$local_port" =~ ^[0-9]+$ ]] || [ "$local_port" -lt 1 ] || [ "$local_port" -gt 65535 ]; then 
-        echo -e "${RED}端口无效${NC}"; 
+        show_error "端口无效，请输入 1-65535 之间的数字"
+        wait_continue
         return
     fi
     if ss -tulnp | grep -q ":${local_port} "; then 
-        echo -e "${RED}端口已被占用${NC}"; 
+        show_error "端口 $local_port 已被占用"
+        wait_continue
         return
     fi
     if grep -q "^${local_port}|" "${DB_FILE}"; then 
-        echo -e "${RED}该端口规则已存在${NC}"; 
+        show_error "端口 $local_port 的规则已存在"
+        wait_continue
         return
     fi
     
-    echo -e "${YELLOW}提示：请输入落地机的纯 IPv4 地址，不要带协议头或域名。${NC}"
-    read -p "落地机地址和端口 (如 1.2.3.4:443): " remote_addr
+    echo ""
+    echo -e "  ${DIM}格式: IP:端口 (如 1.2.3.4:443)${NC}"
+    echo -en "  ${WHITE}落地机地址${NC}     ${GRAY}»${NC} "
+    local remote_addr; read remote_addr
     if ! echo "$remote_addr" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$"; then 
-        echo -e "${RED}格式错误！必须是 IP:端口 格式。${NC}"; 
+        show_error "格式错误！必须是 IPv4:端口 格式"
+        wait_continue
         return
     fi
     
-    echo -e "${YELLOW}选择节点用途： 1.🎬直播  2.🎮游戏  3.🌐通用 (默认3)${NC}"
-    read -p "请输入选项: " cat_num
-    case $cat_num in 1) category="直播";; 2) category="游戏";; *) category="通用";; esac
+    echo ""
+    echo -e "  ${WHITE}选择节点用途${NC}"
+    echo -e "  ${GRAY}  1${NC} 🎬 直播    ${GRAY}2${NC} 🎮 游戏    ${GRAY}3${NC} 🌐 通用 ${DIM}(默认)${NC}"
+    echo -en "  ${CYAN}▶${NC} "
+    local cat_num; read cat_num
+    local category="通用"
+    case $cat_num in 1) category="直播";; 2) category="游戏";; esac
     
-    read -p "输入备注名称 (如 洛杉矶-01，可留空): " remark
+    echo ""
+    echo -en "  ${WHITE}备注名称${NC}       ${GRAY}»${NC} ${DIM}(可留空)${NC} "
+    local remark; read remark
+    
     echo "${local_port}|${remote_addr}|${category}|${remark}" >> ${DB_FILE}
     manage_firewall "$local_port" "open"
+    
+    echo ""
+    show_success "规则添加成功！"
+    echo -e "  ${GRAY}监听${NC} ${CYAN}0.0.0.0:${local_port}${NC} ${GRAY}→${NC} ${CYAN}${remote_addr}${NC}"
+    
     reload_realm
+    wait_continue
 }
 
 # ================= 5. 查看节点 =================
 list_realms() {
-    echo -e "${BLUE}================ 当前中转规则列表 ================${NC}"
+    show_header
+    echo -e "  ${CYAN}━━━ 中转规则列表 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    
     if [ ! -s "${DB_FILE}" ]; then 
-        echo -e "${YELLOW}暂无任何规则。${NC}"; 
+        show_info "暂无任何规则"
+        wait_continue
         return
     fi
-    printf "${GREEN}%-10s %-12s %-25s %-20s${NC}\n" "监听端口" "用途分类" "落地机地址" "备注"
-    printf "%-10s %-12s %-25s %-20s\n" "----------" "------------" "-------------------------" "--------------------"
+    
+    local count=$(grep -v '^#' "${DB_FILE}" | grep -v '^$' | wc -l)
+    echo -e "  ${DIM}共 ${count} 条规则${NC}"
+    echo ""
+    echo -e "  ${DIM}┌──────────┬────────────┬─────────────────────────┬──────────────────┐${NC}"
+    echo -e "  ${DIM}│${NC} ${WHITE}监听端口${NC}   ${DIM}│${NC} ${WHITE}用途${NC}        ${DIM}│${NC} ${WHITE}落地机地址${NC}              ${DIM}│${NC} ${WHITE}备注${NC}            ${DIM}│${NC}"
+    echo -e "  ${DIM}├──────────┼────────────┼─────────────────────────┼──────────────────┤${NC}"
+    
     while IFS='|' read -r local_port remote_addr category remark; do
         [[ -z "$local_port" || "$local_port" == \#* ]] && continue
-        [ -z "$category" ] && category="通用"; [ -z "$remark" ] && remark="-"
-        icon="🌐"; [ "$category" == "直播" ] && icon="🎬"; [ "$category" == "游戏" ] && icon="🎮"
-        printf "%-10s ${YELLOW}%-12s${NC} %-25s %-20s\n" "$local_port" "$icon $category" "$remote_addr" "$remark"
+        [ -z "$category" ] && category="通用"
+        [ -z "$remark" ] && remark="-"
+        
+        local icon="🌐"
+        [ "$category" == "直播" ] && icon="🎬"
+        [ "$category" == "游戏" ] && icon="🎮"
+        
+        printf "  ${DIM}│${NC} ${CYAN}%-8s${NC} ${DIM}│${NC} ${YELLOW}%-10s${NC} ${DIM}│${NC} %-23s ${DIM}│${NC} %-16s ${DIM}│${NC}\n" "$local_port" "$icon $category" "$remote_addr" "$remark"
     done < "${DB_FILE}"
-    echo "------------------------------------------------------"
+    
+    echo -e "  ${DIM}└──────────┴────────────┴─────────────────────────┴──────────────────┘${NC}"
+    
+    wait_continue
 }
 
 # ================= 6. 删除节点 =================
 del_realm() {
-    list_realms
-    [ ! -s "${DB_FILE}" ] && return
-    read -p "输入要删除的规则对应的【监听端口】: " del_port
-    if ! grep -q "^${del_port}|" "${DB_FILE}"; then 
-        echo -e "${RED}未找到该端口的规则${NC}"; 
+    show_header
+    echo -e "  ${RED}━━━ 删除中转规则 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    
+    if [ ! -s "${DB_FILE}" ]; then 
+        show_info "暂无任何规则"
+        wait_continue
         return
     fi
+    
+    # 先显示列表
+    local count=$(grep -v '^#' "${DB_FILE}" | grep -v '^$' | wc -l)
+    echo -e "  ${DIM}共 ${count} 条规则${NC}"
+    echo ""
+    echo -e "  ${DIM}┌──────────┬────────────┬─────────────────────────┬──────────────────┐${NC}"
+    echo -e "  ${DIM}│${NC} ${WHITE}监听端口${NC}   ${DIM}│${NC} ${WHITE}用途${NC}        ${DIM}│${NC} ${WHITE}落地机地址${NC}              ${DIM}│${NC} ${WHITE}备注${NC}            ${DIM}│${NC}"
+    echo -e "  ${DIM}├──────────┼────────────┼─────────────────────────┼──────────────────┤${NC}"
+    
+    while IFS='|' read -r local_port remote_addr category remark; do
+        [[ -z "$local_port" || "$local_port" == \#* ]] && continue
+        [ -z "$category" ] && category="通用"
+        [ -z "$remark" ] && remark="-"
+        local icon="🌐"
+        [ "$category" == "直播" ] && icon="🎬"
+        [ "$category" == "游戏" ] && icon="🎮"
+        printf "  ${DIM}│${NC} ${CYAN}%-8s${NC} ${DIM}│${NC} ${YELLOW}%-10s${NC} ${DIM}│${NC} %-23s ${DIM}│${NC} %-16s ${DIM}│${NC}\n" "$local_port" "$icon $category" "$remote_addr" "$remark"
+    done < "${DB_FILE}"
+    
+    echo -e "  ${DIM}└──────────┴────────────┴─────────────────────────┴──────────────────┘${NC}"
+    echo ""
+    
+    echo -en "  ${RED}输入要删除的监听端口${NC} ${GRAY}»${NC} "
+    local del_port; read del_port
+    [ -z "$del_port" ] && return
+    
+    if ! grep -q "^${del_port}|" "${DB_FILE}"; then 
+        show_error "未找到端口 $del_port 的规则"
+        wait_continue
+        return
+    fi
+    
     grep -v "^${del_port}|" "${DB_FILE}" > "${DB_FILE}.tmp" && mv "${DB_FILE}.tmp" "${DB_FILE}"
     manage_firewall "$del_port" "close"
+    
+    show_success "已删除端口 $del_port 的规则"
     reload_realm
+    wait_continue
 }
 
 # ================= 主菜单 =================
 menu() {
     init_env
     while true; do
-        echo ""
-        echo -e "${GREEN} Realm 中转机管理面板 (私有仓库定制版)${NC}"
-        echo "--------------------------------------------------"
-        echo -e "${BLUE} 1. 深度净化系统 (清理流氓程序释放内存)${NC}"
-        echo -e "${RED} 2. 安装/管理BBRv3 内核${NC}"
-        echo -e "${YELLOW} 3. 应用 BBRv3 极限调优 (自动识别内存)${NC}"
-        echo "--------------------------------------------------"
-        echo " 4. 添加落地机中转规则"
-        echo " 5. 查看所有中转规则"
-        echo " 6. 删除中转规则"
-        echo "--------------------------------------------------"
-        echo " 0. 退出脚本"
-        echo "--------------------------------------------------"
-        read -p "请输入选项: " choice
+        show_header
+        show_system_info
+        show_menu
+        show_prompt
+        read choice
         case $choice in
             1) clean_system_junk ;;
             2) install_bbrv3 ;;
@@ -500,8 +727,16 @@ menu() {
             4) add_realm ;;
             5) list_realms ;;
             6) del_realm ;;
-            0) echo -e "${GREEN}再见！${NC}"; exit 0 ;;
-            *) echo -e "${RED}无效选项，请重新输入。${NC}" ;;
+            0) 
+                echo ""
+                echo -e "  ${DIM}再见！${NC}"
+                echo ""
+                exit 0 
+                ;;
+            *) 
+                show_error "无效选项，请输入 0-6"
+                sleep 1
+                ;;
         esac
     done
 }
